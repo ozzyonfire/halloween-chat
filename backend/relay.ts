@@ -1,10 +1,7 @@
 // @deno-types="npm:@types/ws"
-import { WebSocketServer, WebSocket } from "ws";
-import { RealtimeClient } from "./lib/openai-realtime-api-beta/index.js";
 import type { IncomingMessage } from "node:http";
-import Mic from "node-microphone";
-import { record } from "./lib/mic.ts";
-import { closeStream, playAudio } from "./lib/audio.ts";
+import { WebSocket, WebSocketServer } from "ws";
+import { RealtimeClient } from "./lib/openai-realtime-api-beta/index.js";
 
 export class RealtimeRelay {
   apiKey: string;
@@ -99,56 +96,4 @@ export class RealtimeRelay {
   log(...args: any[]) {
     console.log(`[RealtimeRelay]`, ...args);
   }
-}
-
-if (import.meta.main) {
-  const key = Deno.env.get("OPENAI_API_KEY");
-  if (!key) {
-    throw new Error("Open AI API Key is required.");
-  }
-  // const relay = new RealtimeRelay(key);
-  // relay.listen(8001);
-
-  const client = new RealtimeClient({ apiKey: key, debug: false });
-
-  Deno.addSignalListener("SIGINT", () => {
-    console.log("interrupted!");
-    closeStream();
-    client.disconnect();
-    Deno.exit();
-  });
-
-  await client.connect();
-
-  // const recordingBuffer = await record({
-  //   channels: 1,
-  //   bitwidth: "16",
-  //   encoding: "signed-integer",
-  //   rate: "16000",
-  // });
-
-  // client.appendInputAudio(recordingBuffer);
-
-  client.on("error", (event: any) => {
-    console.log("ERROR:");
-    console.error(event);
-  });
-
-  client.on("conversation.updated", (data) => {
-    if (data.item.status === "in_progress" && data.item.role === "assistant") {
-      if (data.delta && data.delta.audio && data.delta.audio.length > 0) {
-        console.log(data.delta.audio);
-        // console.log(data);
-        playAudio(data.delta.audio);
-      }
-    }
-  });
-
-  client.sendUserMessageContent([
-    {
-      type: `input_text`,
-      // text: `Hello!`,
-      text: `For testing purposes, I want you to list ten car brands. Number each item, e.g. "one (or whatever number you are one): the item name".`,
-    },
-  ]);
 }

@@ -1,145 +1,8 @@
-// const isMac = require('os').type() == 'Darwin';
-// const isWin = require('os').type().indexOf('Windows') > -1;
-// const spawn = require('child_process').spawn;
-// const EventEmitter = require('events');
-
-// export class Microphone extends EventEmitter {
-//     constructor(options) {
-//         super();
-//         this.ps = null;
-
-//         options = options || {};
-//         this.endian = options.endian || 'little';
-//         this.bitwidth = options.bitwidth || '16';
-//         this.encoding = options.encoding || 'signed-integer';
-//         this.rate = options.rate || '16000';
-//         this.channels = options.channels || '1';
-//         this.additionalParameters = options.additionalParameters || false;
-//         this.useDataEmitter = !!options.useDataEmitter;
-//         if (isWin) {
-//             this.device = options.device || 'default';
-//         }
-//         if (!isWin && !isMac) {
-//             this.device = options.device || 'plughw:1,0';
-//             this.format = undefined;
-//             this.formatEndian = undefined;
-//             this.formatEncoding = undefined;
-
-//             if (this.encoding === 'unsigned-integer') {
-//                 this.formatEncoding = 'U';
-//             } else {
-//                 this.formatEncoding = 'S';
-//             }
-//             if (this.endian === 'big') {
-//                 this.formatEndian = 'BE';
-//             } else {
-//                 this.formatEndian = 'LE';
-//             }
-//             this.format =
-//                 this.formatEncoding + this.bitwidth + '_' + this.formatEndian;
-//         }
-//     }
-
-//     // end on silence - default threshold 0.5
-//     //'silence', '1', '0.1', options.threshold + '%',
-//     //'1', '1.0', options.threshold + '%'
-
-//     startRecording() {
-//         let audioOptions;
-//         if (this.ps === null) {
-//             if (isWin) {
-//                 audioOptions = [
-//                     '-b',
-//                     this.bitwidth,
-//                     '--endian',
-//                     this.endian,
-//                     '-c',
-//                     this.channels,
-//                     '-r',
-//                     this.rate,
-//                     '-e',
-//                     this.encoding,
-//                     '-t',
-//                     'waveaudio',
-//                     this.device,
-//                     '-p',
-//                 ];
-//                 if (this.additionalParameters) {
-//                     audioOptions = audioOptions.concat(
-//                         this.additionalParameters
-//                     );
-//                 }
-//                 this.ps = spawn('sox', audioOptions);
-//             } else if (isMac) {
-//                 audioOptions = [
-//                     '-q',
-//                     '-b',
-//                     this.bitwidth,
-//                     '-c',
-//                     this.channels,
-//                     '-r',
-//                     this.rate,
-//                     '-e',
-//                     this.encoding,
-//                     '-t',
-//                     'wav',
-//                     '-',
-//                 ];
-//                 if (this.additionalParameters) {
-//                     audioOptions = audioOptions.concat(
-//                         this.additionalParameters
-//                     );
-//                 }
-//                 this.ps = spawn('rec', audioOptions);
-//             } else {
-//                 audioOptions = [
-//                     '-c',
-//                     this.channels,
-//                     '-r',
-//                     this.rate,
-//                     '-f',
-//                     this.format,
-//                     '-D',
-//                     this.device,
-//                 ];
-//                 if (this.additionalParameters) {
-//                     audioOptions = audioOptions.concat(
-//                         this.additionalParameters
-//                     );
-//                 }
-//                 this.ps = spawn('arecord', audioOptions);
-//             }
-//             this.ps.on('error', (error) => {
-//                 this.emit('error', error);
-//             });
-//             this.ps.stderr.on('error', (error) => {
-//                 this.emit('error', error);
-//             });
-//             this.ps.stderr.on('data', (info) => {
-//                 this.emit('info', info);
-//             });
-//             if (this.useDataEmitter) {
-//                 this.ps.stdout.on('data', (data) => {
-//                     this.emit('data', data);
-//                 });
-//             }
-//             return this.ps.stdout;
-//         }
-//     }
-
-//     stopRecording() {
-//         if (this.ps) {
-//             this.ps.kill();
-//             this.ps = null;
-//         }
-//     }
-// }
-
 interface RecordingOptions {
   endian?: "big" | "little" | "swap";
   bitwidth: "16";
   encoding: "signed-integer";
-  rate: "16000";
+  rate?: "24000";
   channels: 1 | 2;
   additionalParameters?: boolean;
   useDefaultDevice?: boolean;
@@ -151,88 +14,150 @@ const DEFAULT_OPTIONS: RecordingOptions = {
   endian: "little",
   encoding: "signed-integer",
   bitwidth: "16",
-  rate: "16000",
+  rate: "24000",
   channels: 1,
   useDefaultDevice: true,
   silenceDuration: 1,
   silenceThreshold: 0.5,
 };
 
-export async function record(options?: RecordingOptions) {
-  options = { ...DEFAULT_OPTIONS, ...options };
-  const args: string[] = [];
+export class AudioRecorder {
+  private options: RecordingOptions;
+  private isRecording: boolean = false;
+  private recProcess: Deno.ChildProcess | null = null;
+  private chunkSize: number = 4096; // Adjust this value as needed
 
-  if (options.useDefaultDevice) {
-    args.push("--default-device");
+  constructor(options?: Partial<RecordingOptions>) {
+    this.options = { ...DEFAULT_OPTIONS, ...options };
   }
 
-  if (options.endian) {
-    args.push("--endian", options.endian);
+  async startRecording(
+    onAudioDetected: (audio: Int16Array | ArrayBuffer) => void
+  ) {
+    if (this.isRecording) {
+      throw new Error("Recording is already in progress");
+    }
+
+    this.isRecording = true;
+    const args = this.buildRecordingArgs();
+
+    try {
+      const rec = new Deno.Command("rec", {
+        args: args,
+        stdout: "piped",
+        stderr: "piped",
+      });
+
+      this.recProcess = rec.spawn();
+
+      // Process stdout
+      this.processStdout(this.recProcess.stdout, onAudioDetected);
+
+      // Process stderr
+      this.processStderr(this.recProcess.stderr);
+
+      // Wait for the process to finish
+      await this.recProcess.status;
+    } catch (error) {
+      console.error("Recording error:", error);
+    } finally {
+      this.isRecording = false;
+    }
   }
 
-  args.push(
-    "-q", // show no progress
-    "-b",
-    options.bitwidth,
-    "-c",
-    options.channels.toString(),
-    "-r",
-    options.rate,
-    "-e",
-    options.encoding,
-    "-t",
-    "raw", // output raw PCM data
-    "-" // output to stdout
-  );
-
-  // Add silence effect to stop recording after a period of silence
-  args.push(
-    "silence",
-    "1",
-    "0.1",
-    `${options.silenceThreshold}%`,
-    "1",
-    options.silenceDuration ? options.silenceDuration.toString() : "1",
-    `${options.silenceThreshold}%`
-  );
-
-  const rec = new Deno.Command("rec", {
-    args: args,
-    stdout: "piped",
-    stderr: "piped",
-  });
-
-  const { stdout, stderr } = await rec.output();
-
-  if (stderr.length > 0) {
-    console.error(new TextDecoder().decode(stderr));
-    throw new Error("Error occurred while recording");
+  stopRecording() {
+    this.isRecording = false;
+    if (this.recProcess) {
+      this.recProcess.kill("SIGTERM");
+      this.recProcess = null;
+    }
   }
 
-  // Convert the output buffer to Uint8Array
-  const uint8Array = new Uint8Array(stdout.buffer);
-  return base64EncodeAudio(uint8Array);
-}
+  private buildRecordingArgs(): string[] {
+    const args: string[] = ["-q"];
 
-// Converts Float32Array of audio data to PCM16 ArrayBuffer
-function _floatTo16BitPCM(float32Array: Float32Array) {
-  const buffer = new ArrayBuffer(float32Array.length * 2);
-  const view = new DataView(buffer);
-  let offset = 0;
-  for (let i = 0; i < float32Array.length; i++, offset += 2) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return buffer;
-}
+    if (this.options.endian) {
+      args.push("--endian", this.options.endian);
+    }
 
-// Converts a Uint8Array to base64-encoded PCM16 data
-function base64EncodeAudio(uint8Array: Uint8Array) {
-  let binary = "";
-  const chunkSize = 0x8000; // 32KB chunk size
-  for (let i = 0; i < uint8Array.length; i += chunkSize) {
-    const chunk = uint8Array.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+    args.push(
+      "-b",
+      this.options.bitwidth,
+      "-c",
+      this.options.channels.toString(),
+      "-r",
+      this.options.rate || "24000",
+      "-e",
+      this.options.encoding,
+      "-t",
+      "raw", // output raw PCM data
+      "-" // output to stdout
+    );
+
+    // Add silence effect to stop recording after a period of silence
+    // args.push(
+    //   "silence",
+    //   "1",
+    //   "0.1",
+    //   `1%`,
+    //   "1",
+    //   this.options.silenceDuration
+    //     ? this.options.silenceDuration.toString()
+    //     : "1",
+    //   `1%`
+    // );
+
+    // Add high-pass filter
+    args.push("highpass", "200");
+
+    // Add compressor
+    args.push("compand", "0.3,1", "6:-70,-60,-20", "-5", "-90", "0.2");
+
+    return args;
   }
-  return btoa(binary);
+
+  private base64EncodeAudio(uint8Array: Uint8Array): string {
+    let binary = "";
+    const chunkSize = 0x8000; // 32KB chunk size
+    for (let i = 0; i < uint8Array.length; i += chunkSize) {
+      const chunk = uint8Array.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+    }
+    return btoa(binary);
+  }
+
+  private async processStdout(
+    reader: ReadableStream<Uint8Array>,
+    onAudioDetected: (audio: Int16Array | ArrayBuffer) => void
+  ) {
+    const buffer = new Uint8Array(this.chunkSize);
+    let offset = 0;
+
+    for await (const chunk of reader) {
+      if (!this.isRecording) break;
+
+      for (let i = 0; i < chunk.length; i++) {
+        buffer[offset++] = chunk[i];
+        if (offset === this.chunkSize) {
+          // const int16Array = new Int16Array(buffer.buffer);
+          onAudioDetected(buffer.buffer);
+          offset = 0;
+        }
+      }
+    }
+
+    // Send any remaining data
+    if (offset > 0) {
+      const int16Array = new Int16Array(buffer.subarray(0, offset).buffer);
+      onAudioDetected(int16Array);
+    }
+  }
+
+  private async processStderr(reader: ReadableStream<Uint8Array>) {
+    const decoder = new TextDecoder();
+    for await (const chunk of reader) {
+      if (!this.isRecording) break;
+      console.error(decoder.decode(chunk));
+    }
+  }
 }

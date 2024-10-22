@@ -12,8 +12,10 @@
   "dependencies": {
     "node-microphone": "^0.1.6",
     "node-record-lpcm16": "^1.0.1",
+    "openai-realtime-api": "^1.0.5",
     "pcm-player": "^0.0.18",
     "realtime-api-beta": "link:openai/openai/realtime-api-beta",
+    "replicate": "^1.0.1",
     "speaker": "^0.5.5"
   }
 }

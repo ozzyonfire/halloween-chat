@@ -4,62 +4,92 @@ import {
   SampleFormat,
 } from "https://deno.land/x/portaudio/mod.ts";
 
-// 24 kHz sample rate
-const SAMPLE_RATE = 24000;
-const FRAMES_PER_BUFFER = 6000;
+export class AudioPlayer {
+  private static SAMPLE_RATE = 24000;
+  private static FRAMES_PER_BUFFER = 6000;
 
-PortAudio.initialize(); // Initialize the module
+  private stream: Deno.PointerValue;
+  private audioQueue: Array<{ trackId: string; audio: Int16Array }> = [];
+  private isProcessing = false;
+  private currentTrackId: string | null = null;
+  private currentOffset = 0;
 
-const outputDevice = PortAudio.getDefaultOutputDevice();
-const stream = PortAudio.openStream(
-  null,
-  {
-    device: outputDevice,
-    channelCount: 1,
-    sampleFormat: SampleFormat.int16,
-    suggestedLatency:
-      PortAudio.getDeviceInfo(outputDevice).defaultLowOutputLatency,
-  },
-  SAMPLE_RATE,
-  FRAMES_PER_BUFFER,
-  StreamFlags.clipOff
-);
+  constructor() {
+    PortAudio.initialize();
+    const outputDevice = PortAudio.getDefaultOutputDevice();
+    this.stream = PortAudio.openStream(
+      null,
+      {
+        device: outputDevice,
+        channelCount: 1,
+        sampleFormat: SampleFormat.int16,
+        suggestedLatency:
+          PortAudio.getDeviceInfo(outputDevice).defaultLowOutputLatency,
+      },
+      AudioPlayer.SAMPLE_RATE,
+      AudioPlayer.FRAMES_PER_BUFFER,
+      StreamFlags.clipOff
+    );
+    PortAudio.startStream(this.stream);
+  }
 
-PortAudio.startStream(stream);
+  public addAudioToQueue(trackId: string, int16Array: Int16Array) {
+    this.audioQueue.push({ trackId, audio: int16Array });
+    if (!this.isProcessing) {
+      this.processAudioQueue();
+    }
+  }
 
-// Queue to buffer incoming audio data
-const audioQueue: Int16Array[] = [];
-
-// Function to play audio data
-export function playAudio(int16Array: Int16Array) {
-  audioQueue.push(int16Array);
-}
-
-// Function to process and play audio data from the queue
-async function processAudioQueue() {
-  while (true) {
-    if (audioQueue.length > 0) {
-      const audioData = audioQueue.shift();
+  private processAudioQueue() {
+    this.isProcessing = true;
+    while (this.audioQueue.length > 0) {
+      const audioData = this.audioQueue.shift();
       if (audioData) {
-        console.log(audioData.length);
         try {
-          PortAudio.writeStream(stream, audioData, FRAMES_PER_BUFFER);
+          this.currentTrackId = audioData.trackId;
+          this.currentOffset = 0;
+          // Process audio data in smaller chunks
+          for (
+            let i = 0;
+            i < audioData.audio.length;
+            i += AudioPlayer.FRAMES_PER_BUFFER
+          ) {
+            const chunk = audioData.audio.subarray(
+              i,
+              i + AudioPlayer.FRAMES_PER_BUFFER
+            );
+            PortAudio.writeStream(this.stream, chunk, chunk.length);
+            this.currentOffset += chunk.length;
+          }
         } catch (error) {
           console.error("Error writing to stream:", error);
         }
       }
-    } else {
-      // Wait for a short period before checking the queue again
-      await new Promise((resolve) => setTimeout(resolve, 200));
     }
+    this.isProcessing = false;
+    this.currentTrackId = null;
+    this.currentOffset = 0;
   }
-}
 
-// Start processing the audio queue
-processAudioQueue();
+  public interrupt(): { trackId: string; offset: number } | null {
+    if (this.currentTrackId) {
+      const result = {
+        trackId: this.currentTrackId,
+        offset: this.currentOffset,
+      };
+      this.audioQueue = []; // Clear the queue
+      this.isProcessing = false;
+      this.currentTrackId = null;
+      this.currentOffset = 0;
+      PortAudio.abortStream(this.stream); // Stop the current playback
+      return result;
+    }
+    return null;
+  }
 
-export function closeStream() {
-  PortAudio.stopStream(stream);
-  PortAudio.closeStream(stream);
-  PortAudio.terminate();
+  public closeStream() {
+    PortAudio.stopStream(this.stream);
+    PortAudio.closeStream(this.stream);
+    PortAudio.terminate();
+  }
 }

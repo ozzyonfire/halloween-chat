@@ -8,6 +8,14 @@ class ChatEvent extends Event {
   }
 }
 
+class ChatImageGeneratedEvent extends Event {
+  url: URL;
+  constructor(url: URL) {
+    super("chatImageGenerated");
+    this.url = url;
+  }
+}
+
 class ChatEventTarget extends EventTarget {
   constructor() {
     super();
@@ -23,6 +31,18 @@ class ChatEventTarget extends EventTarget {
         if (e.id === id) {
           callback(e);
         }
+      }
+    });
+  }
+
+  chatImageGenerated(url: URL) {
+    this.dispatchEvent(new ChatImageGeneratedEvent(url));
+  }
+
+  onChatImageGenerated(callback: (event: ChatImageGeneratedEvent) => void) {
+    this.addEventListener("chatImageGenerated", (e) => {
+      if (e instanceof ChatImageGeneratedEvent) {
+        callback(e);
       }
     });
   }
