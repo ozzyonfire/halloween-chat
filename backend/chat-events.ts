@@ -1,8 +1,8 @@
 class ChatEvent extends Event {
   content: string;
   id: string;
-  constructor(type: string, id: string, content: string) {
-    super(type);
+  constructor(id: string, content: string) {
+    super("chatCompleted");
     this.content = content;
     this.id = id;
   }
@@ -22,7 +22,7 @@ class ChatEventTarget extends EventTarget {
   }
 
   chatCompleted(id: string, content: string) {
-    this.dispatchEvent(new ChatEvent("chatCompleted", id, content));
+    this.dispatchEvent(new ChatEvent(id, content));
   }
 
   onChatCompleted(id: string, callback: (event: ChatEvent) => void) {

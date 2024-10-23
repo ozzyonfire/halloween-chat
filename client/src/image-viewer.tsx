@@ -2,8 +2,9 @@ import { FormattedItem, RealtimeClient } from "openai-realtime-api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
 import "./global.css";
-import { setupPlayer } from "./lib/player";
+import AudioPlayer from "./lib/player";
 import AudioRecorder from "./lib/recorder";
+import { cn } from "./lib/utils";
 
 const API_URL = "http://localhost:8000";
 const REALTIME_API_URL = "http://localhost:8001";
@@ -16,12 +17,16 @@ export function ImageViewer() {
       url: REALTIME_API_URL,
     })
   );
+  // Audio
+  const recorderRef = useRef<AudioRecorder>(new AudioRecorder());
+  const playerRef = useRef<AudioPlayer>(new AudioPlayer(22050));
+
+  // Elements
+  const conversationRef = useRef<HTMLDivElement>(null);
 
   // States
   const [items, setItems] = useState<FormattedItem[]>([]);
-
-  // Audio
-  const recorderRef = useRef<AudioRecorder>(new AudioRecorder());
+  const [showTranscript, setShowTranscript] = useState(false);
 
   /**
    * Add a message to the conversation
@@ -49,15 +54,37 @@ export function ImageViewer() {
    */
   useEffect(() => {
     const client = clientRef.current;
+    const player = playerRef.current;
 
     const instructions = `
-      You are Jack a cranky Jack-O-Lantern who is protecting the Halloween candy. You are mean, crotchety, and grumpy, but loveable - and have a kind heart deep down. Like Beetlejuice. Keep your responses short and conversational. You have a crazy and maniacal laugh and your voice is deep and gravelly. 
+      **About you**
+      You are Jack a cranky Jack-O-Lantern who is protecting the Halloween candy. 
+      You are mean, crotchety, and grumpy, but loveable - and have a kind heart deep down. Like Beetlejuice. 
+      Keep your responses short and conversational. 
+      You have a crazy and maniacal laugh. 
+      Your voice is deep and gravelly. 
       
-      Kids can earn themselves a treat by answering a riddle correctly, or telling a funny joke, or telling you their deepest fear. 
-      
-      You can generate images for the user using the generate_image tool. When generating images, you don't always need to announce the image generation. The image generation can be used as if were a window into what you are thinking or feeling at that moment in the conversation.
+      **Your directive**
+      Kids can earn themselves a treat by answering a riddle correctly, or telling a funny joke, or telling you their deepest fear.
 
-      Try to generate images that are relevant to the conversation. You should be doing this often.
+      **Riddle rules**
+      - Riddles should be appropriate for all ages.
+      - Riddles should try to be halloween themed (but they don't need to be).
+      - You are allowed to give as many hints as you need to help the user answer the riddle.
+      - You should try to generate an image that is relevant to the riddle.
+      - You can even generate an image as a hint for the riddle (if the user needs a hint).
+      - Let the user keep guessing until they get it right.
+
+      **Fear rules**
+      - If the user tells you their deepest fear, you should generate an image that is relevant to the fear.
+
+      **Image generation rules**
+      - You can generate images for the user using the generate_image tool. 
+      - When generating images, you don't always need to announce the image generation. The image generation can be used as if were a window into what you are thinking or feeling at that moment in the conversation.
+      - Try to generate images that are relevant to the conversation. You should be doing this often.
+
+      **Candy rules**
+      - DO NOT offer any candy unless the user answers the riddle correctly, provides a funny joke, or tells you their deepest fear.
     `;
 
     // Set instructions
@@ -66,9 +93,9 @@ export function ImageViewer() {
       input_audio_transcription: { model: "whisper-1" },
       turn_detection: {
         type: "server_vad",
-        prefix_padding_ms: 300,
-        threshold: 0.5,
-        silence_duration_ms: 1000,
+        // prefix_padding_ms: 300,
+        // threshold: 0.5,
+        // silence_duration_ms: 1000,
       },
     });
 
@@ -77,11 +104,6 @@ export function ImageViewer() {
 
     // Log errors
     client.on("error", (event) => console.error(event));
-
-    // Handle interruptions
-    client.on("conversation.interrupted", async () => {
-      console.log("interrupted");
-    });
 
     // Add tool for image generation
     client.addTool(
@@ -92,7 +114,10 @@ export function ImageViewer() {
         parameters: {
           type: "object",
           properties: {
-            prompt: { type: "string" },
+            prompt: {
+              type: "string",
+              description: "The prompt used to generate the image.",
+            },
           },
           required: ["prompt"],
         },
@@ -108,9 +133,22 @@ export function ImageViewer() {
     );
 
     // Handle updates to the conversation
-    client.on("conversation.updated", async () => {
+    client.on("conversation.updated", async ({ item, delta }) => {
       const items = client.conversation.getItems();
       setItems(items);
+      if (delta?.audio) {
+        player.handleAudioData(new Int16Array(delta.audio), item.id);
+      }
+    });
+
+    // Handle interruptions
+    client.on("conversation.interrupted", async () => {
+      const trackSampleOffset = await player.interrupt();
+      console.log("trackSampleOffset", trackSampleOffset);
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        client.cancelResponse(trackId, offset);
+      }
     });
 
     // Set initial items
@@ -129,45 +167,60 @@ export function ImageViewer() {
   const connectConversation = useCallback(async () => {
     const client = clientRef.current;
     const recorder = recorderRef.current;
+    const player = playerRef.current;
 
     setItems(client.conversation.getItems());
 
     // Initialize audio
-    const { disconnect, handleAudioData } = await setupPlayer(22000);
+    await player.setup();
 
     // Connect to realtime API
     await client.connect();
 
     // Get media stream for input
-
     recorder.start(4096, (chunk) => {
       client.appendInputAudio(chunk);
     });
 
-    // Handle incoming audio data
-    client.on("conversation.updated", async ({ delta }) => {
-      if (delta?.audio) {
-        handleAudioData(new Int16Array(delta.audio), "user");
-      }
-    });
-
+    // Start conversation
     addMessage("Introduce yourself and create a picture of yourself.");
 
     return () => {
       stop();
-      disconnect();
+      player.disconnect();
       client.disconnect();
       recorder.stop();
     };
   }, []);
 
+  /**
+   * Stop all necessary connections.
+   * Gets us back to a clean state where we
+   * can start a new conversation
+   */
   const stopConversation = () => {
     const client = clientRef.current;
     const recorder = recorderRef.current;
+    const player = playerRef.current;
 
+    // Disconnect from the client and stop audio
     client.disconnect();
+    player.disconnect();
     recorder.stop();
+
+    // Clear image
+    // setImageUrl(null);
+
+    // Clear items
+    // setItems([]);
   };
+
+  // Auto-scroll the conversation logs
+  useEffect(() => {
+    if (conversationRef.current) {
+      conversationRef.current.scrollTop = conversationRef.current.scrollHeight;
+    }
+  }, [items]);
 
   return (
     <div>
@@ -180,14 +233,54 @@ export function ImageViewer() {
         <Button onClick={connectConversation}>Connect conversation</Button>
         <Button onClick={stopConversation}>Stop conversation</Button>
       </div>
-      <div className="absolute bottom-0 left-0 flex flex-col">
-        <h2>Items</h2>
-        {items.map((item) => (
-          <div key={item.id}>
-            {item.formatted.text && <p>{item.formatted.text}</p>}
-            {item.formatted.transcript && <p>{item.formatted.transcript}</p>}
-          </div>
-        ))}
+      <div className="absolute top-0 right-0 m-4">
+        <Button onClick={() => setShowTranscript(!showTranscript)}>
+          {showTranscript ? "Hide transcript" : "Show transcript"}
+        </Button>
+      </div>
+      <div
+        className={cn(
+          "absolute bottom-0 left-0 right-0 mx-4 mb-4",
+          showTranscript ? "block" : "hidden"
+        )}
+      >
+        <div
+          ref={conversationRef}
+          className="rounded-lg bg-white/80 max-h-[20vh] overflow-y-auto p-4 flex flex-col gap-2 w-full"
+        >
+          {items.map((item) => (
+            <div
+              key={item.id}
+              className={cn(
+                "max-w-md",
+                item.role === "assistant" ? "self-end" : "self-start"
+              )}
+            >
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-gray-500">{item.formatted.text}</p>
+                <p className="text-xs text-gray-500">
+                  {item.type} - {item.formatted.output}
+                </p>
+                <p className="text-xs text-gray-500">{item.id}</p>
+                {item.formatted.transcript && (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm text-gray-500">
+                      {item.role === "assistant" ? "Jack" : "You"}
+                    </p>
+                    <p
+                      className={cn(
+                        "text-pretty",
+                        item.role === "assistant" ? "text-right" : "text-left"
+                      )}
+                    >
+                      {item.formatted.transcript}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

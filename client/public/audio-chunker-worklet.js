@@ -4,6 +4,26 @@ class AudioChunkerProcessor extends AudioWorkletProcessor {
     this.chunkSize = options.processorOptions.chunkSize;
     this.buffer = new Float32Array(this.chunkSize);
     this.bufferIndex = 0;
+    this.currentTrackId = null;
+
+    this.port.onmessage = (event) => {
+      if (event.data.type === "interrupt") {
+        this.handleInterrupt(event.data.trackId);
+      }
+    };
+  }
+
+  handleInterrupt(trackId) {
+    // Reset the buffer and buffer index
+    this.buffer = new Float32Array(this.chunkSize);
+    this.bufferIndex = 0;
+    this.currentTrackId = trackId;
+
+    // Acknowledge the interrupt
+    this.port.postMessage({
+      type: "interruptAck",
+      trackId: trackId,
+    });
   }
 
   process(inputs, outputs, parameters) {
@@ -21,6 +41,7 @@ class AudioChunkerProcessor extends AudioWorkletProcessor {
         this.port.postMessage({
           type: "chunk",
           chunk: pcmBuffer,
+          trackId: this.currentTrackId,
         });
         this.buffer = new Float32Array(this.chunkSize);
         this.bufferIndex = 0;

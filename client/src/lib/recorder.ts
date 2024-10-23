@@ -50,7 +50,7 @@ class AudioRecorder {
   }
 
   getSingleChannelStream(stream: MediaStream) {
-    const audioContext = new AudioContext({ sampleRate: 22000 });
+    const audioContext = new AudioContext({ sampleRate: 22050 });
     const source = audioContext.createMediaStreamSource(stream);
 
     const splitter = audioContext.createChannelSplitter(2);
@@ -68,7 +68,13 @@ class AudioRecorder {
   }
 
   private getMediaStream() {
-    return navigator.mediaDevices.getUserMedia({ audio: true });
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        autoGainControl: true,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
   }
 
   private stopMediaStream(stream: MediaStream) {
@@ -108,6 +114,9 @@ class AudioRecorder {
         chunkerNode.port.onmessage = (event) => {
           if (event.data.type === "chunk") {
             callback(event.data.chunk);
+          } else if (event.data.type === "interruptAck") {
+            // Handle interrupt acknowledgment if needed
+            console.log("Interrupt acknowledged:", event.data);
           }
         };
       },
